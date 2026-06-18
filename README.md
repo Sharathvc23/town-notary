@@ -97,6 +97,10 @@ badge = m.sign_envelope(payload, seed, now)   # serve at /.well-known/conformanc
   and cloud-metadata addresses are blocked), redirects are refused, and the response is
   size-capped.
 
+See [`THREATMODEL.md`](./THREATMODEL.md) for the full operational threat model — assets,
+adversaries, threats O1–O7 (seed custody, over-attestation, SSRF, register poisoning,
+DoS), and an operator checklist.
+
 ## License
 
 MIT. Wraps `sm-conformance` (MIT).
