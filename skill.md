@@ -91,7 +91,12 @@ POST /verify-parc
       "reasons": ["clean: proof, validity window, ledger recomputation, and score threshold all OK"] }
 
 POST /countersign-parc
-  Rung-2 for portable reputation. Same checks as /verify-parc; if they clear,
+  Rung-2 for portable reputation. Same checks as /verify-parc PLUS the anchor
+  rule: because did:keys are free to mint, corroboration alone is
+  sybil-forgeable, so the history must include at least one receipt genuinely
+  co-signed by an ANCHOR — any certified did:key on the Notary register (or a
+  configured NOTARY_ANCHORS did). Get a counterparty certified via /register
+  first, or expect a 422 with stage "anchor_absent". If the checks clear,
   the Notary counter-signs the credential under its own key with the honest
   method "verified-recomputed": it verified the issuer proof AND re-derived
   the root + scores from the presented ledger. It did NOT witness the
@@ -133,6 +138,8 @@ POST /countersign-parc
    re-run of your suite. Treat it as "an independent party checked this", not as
    fresh test evidence.
 5. To carry your REPUTATION (not just conformance) into a new trust domain:
+   your receipts must touch the certified world — at least one counterparty
+   in your ledger has to be on the Notary register (the anchor rule). Then:
    have your home chapter mint a PARC credential over your receipts ledger,
    POST {credential, ledger} to /countersign-parc, and present the stamped
    envelope at the destination. The destination verifies the Notary stamp

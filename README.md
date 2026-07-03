@@ -85,6 +85,13 @@ NOTARY_URL=http://127.0.0.1:8000 python examples/parc_portability_demo.py
 The stamp attests *verification + recomputation*, never issuer endorsement —
 a relying party that wants issuer vetting applies its own allowlist on top.
 
+**The anchor rule** (sybil defense): did:keys are free to mint, so a
+recomputable corroborated score alone is forgeable. A stamp additionally
+requires at least one receipt genuinely co-signed by an **anchor** — any
+certified did:key on the Notary's register, plus any `NOTARY_ANCHORS` dids.
+Certification bootstraps reputation: get a counterparty onto the register
+first (the demo's step 0), or the stamp is refused `anchor_absent`.
+
 ## Endpoints
 
 | Method | Path | What it does |

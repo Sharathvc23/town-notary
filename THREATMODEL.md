@@ -60,10 +60,16 @@ The `/verify-parc` and `/countersign-parc` surface inherits O1–O7 and adds:
 - **P4 — Stamp overclaim.** Relying parties reading the stamp as issuer
   endorsement. Mitigated in-band: the signed method is `verified-recomputed`
   and every assessment carries `"attests": "... NOT issuer endorsement"`.
-  Residual: an inline single-subject ledger is a star graph — it exposes
-  self-dealing but structurally cannot reveal an N-party collusion ring
-  (sm-parc's documented inline-mode residual; ring detection needs the
-  published-ledger mode, out of scope for this service today).
+  The sybil residual (free-to-mint counterparty dids corroborating their own
+  receipts) is closed by the ANCHOR RULE: a stamp requires at least one
+  receipt whose counterparty is in the anchor set (NOTARY_ANCHORS plus every
+  certified did:key on the register) AND whose co-signature by that anchor
+  verifies — refusal stage `anchor_absent`. Empty anchor set disables the
+  rule (bootstrap mode). Remaining residuals: an attacker who obtains ONE
+  genuine corroborated receipt from an anchor evades the rule (sm-parc's own
+  documented required_anchors residual), and an inline single-subject ledger
+  still cannot reveal an N-party ring among non-anchor parties
+  (published-ledger severance remains out of scope for this service).
 - **P5 — Timestamp trust.** RESOLVED for PARC stamps: `countersigned_at` is
   inside the signed payload (the top-level copy is display-only). The badge
   envelope's timestamp remains advisory (sm-conformance format, unchanged).

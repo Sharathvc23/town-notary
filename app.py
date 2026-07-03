@@ -47,6 +47,7 @@ from sm_conformance import (
 import jcs
 
 from sm_arp import verify_receipt
+from sm_arp.vrp import is_corroborated
 from sm_parc import AdmissionPolicy as ParcAdmissionPolicy
 from sm_parc import AdmissionResult as ParcAdmissionResult
 from sm_parc import admit as parc_admit
@@ -293,6 +294,41 @@ def _resolve(req) -> dict[str, Any]:
 # Bound the SCC/recompute work a hostile ledger can demand from the service.
 PARC_MAX_RECEIPTS = 5000
 
+# Sybil defense (the anchor rule): did:keys are free to mint, so a recomputable
+# corroborated score alone is forgeable — an attacker co-signs its own receipts
+# with 3 fresh "counterparties". A stamp therefore additionally requires the
+# subject's history to TOUCH AT LEAST ONE ANCHOR: a receipt whose counterparty
+# is a known-honest did AND whose co-signature by that anchor actually verifies
+# (a junk receipt merely naming an anchor does not count). The anchor set is
+# NOTARY_ANCHORS (comma-separated dids) plus every did:key on the certified
+# register — so the conformance rung bootstraps the reputation rung: get
+# certified, and your co-signature becomes reputation-bearing. Empty anchor
+# set = check disabled (bootstrap mode), mirroring sm-parc's required_anchors
+# semantics. Residual (same as sm-parc's THREATMODEL): an attacker who obtains
+# one genuine corroborated edge from an anchor evades the gate.
+NOTARY_ANCHORS = frozenset(
+    d.strip() for d in os.environ.get("NOTARY_ANCHORS", "").split(",") if d.strip()
+)
+
+
+def _anchor_set() -> set[str]:
+    """Configured anchors plus every certified (registered) did:key."""
+    return set(NOTARY_ANCHORS) | {k for k in REGISTER if k.startswith("did:key:")}
+
+
+def _touches_anchor(ledger: dict[str, Any], anchors: set[str]) -> bool:
+    """True iff some receipt's ANCHOR counterparty genuinely co-signed it."""
+    receipts = ledger.get("receipts")
+    if not isinstance(receipts, list):
+        return False
+    for r in receipts:
+        if not isinstance(r, dict):
+            continue
+        counterparty = (r.get("action") or {}).get("counterparty_did")
+        if counterparty in anchors and verify_receipt(r).ok and is_corroborated(r):
+            return True
+    return False
+
 
 def _receipt_is_valid(receipt: dict[str, Any]) -> bool:
     """The ARP verifier the recompute path runs per receipt (strict mode)."""
@@ -357,13 +393,27 @@ def _assess_parc(credential: dict[str, Any], ledger: dict[str, Any],
                                   "credential or ledger not processable")
     subject = credential.get("credentialSubject") or {}
     certified = bool(res.ok)
+    stage = res.stage
     reasons = [res.detail if res.detail else res.stage]
+    anchors = _anchor_set()
+    anchored: Optional[bool] = None
+    if certified and anchors:
+        anchored = _touches_anchor(ledger, anchors)
+        if not anchored:
+            certified = False
+            stage = "anchor_absent"
+            reasons = ["no verified corroboration from any anchor: a "
+                       "recomputable score alone is sybil-forgeable, so the "
+                       "history must include at least one receipt co-signed "
+                       "by a certified/anchored did (see /register)"]
     if certified:
         reasons = ["clean: proof, validity window, ledger recomputation, "
-                   "and score threshold all OK"]
+                   "score threshold, and anchor rule all OK"]
     return {
         "certified": certified,
-        "stage": res.stage,
+        "stage": stage,
+        "anchored": anchored,
+        "anchor_rule_active": bool(anchors),
         "subject_did": subject.get("id"),
         "issuer_did": issuer,
         "scoring_method": subject.get("scoring_method"),

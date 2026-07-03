@@ -15,12 +15,21 @@ missing rung: an agent's ACCUMULATED STANDING crossing a trust-domain border.
      admits the agent offline: it verifies the Notary's countersignature
      against the Notary's pinned did:key, then recomputes the ledger itself.
 
-Two refusals prove the stamp means something:
+Step 0 closes the sybil hole: did:keys are free to mint, so corroboration
+alone is forgeable. The Notary's ANCHOR RULE requires the history to include
+at least one receipt genuinely co-signed by a certified did. So the demo
+first gets counterparty-0 CERTIFIED (a conformance badge on the register) —
+the conformance rung bootstrapping the reputation rung.
+
+Three refusals prove the stamp means something:
 
   * an issuer-INFLATED credential (score bumped, genuinely re-signed by
     Chapter A — the signature verifies!) is refused: recomputation catches it;
   * an UNCORROBORATED (self-dealing) agent's credential recomputes honestly to
-    score 0 and is refused at the bar.
+    score 0 and is refused at the bar;
+  * a SYBIL agent whose receipts are all co-signed by freshly minted
+    counterparties RECOMPUTES PERFECTLY and clears the bar — and is refused
+    anchor_absent: nothing in its history touches a certified did.
 
 Run against the live Notary (default) or a local one:
 
@@ -42,6 +51,7 @@ from sm_arp import Identity, issue_receipt, new_receipt_id, verify_receipt
 from sm_arp.receipts import build_action
 from sm_arp.vrp import build_ledger, cosign_receipt, did_from_sk
 from sm_conformance import parse_did_key
+from sm_conformance.badge import build_badge
 from sm_parc import (
     AdmissionPolicy,
     admit,
@@ -59,6 +69,10 @@ CP_SKS = [hashlib.sha256(f"portability-demo:counterparty-{i}".encode()).digest()
           for i in range(3)]
 WASH_SK = hashlib.sha256(b"portability-demo:wash-agent").digest()
 WASH = Identity.from_seed(WASH_SK)
+SYBIL_SK = hashlib.sha256(b"portability-demo:sybil-agent").digest()
+SYBIL = Identity.from_seed(SYBIL_SK)
+SYBIL_CP_SKS = [hashlib.sha256(f"portability-demo:sybil-cp-{i}".encode()).digest()
+                for i in range(3)]
 CHAPTER_A_SK = hashlib.sha256(b"portability-demo:chapter-a").digest()
 CHAPTER_A_DID = did_from_private_key(CHAPTER_A_SK)
 
@@ -213,11 +227,36 @@ def chapter_b_admit(stamped: dict[str, Any], ledger: dict[str, Any],
           f"(bar={CHAPTER_B_BAR}, stage={res.stage})")
 
 
+def certify_anchor_counterparty() -> str:
+    """Step 0: counterparty-0 earns a conformance badge and registers.
+
+    Its did:key thereby joins the Notary's anchor set: certified runtimes are
+    exactly the dids whose co-signatures the anchor rule counts. Idempotent —
+    re-registering the same signer overwrites its own entry.
+    """
+    badge = build_badge(
+        "parc-demo-anchor",
+        signing_key32=CP_SKS[0],
+        suite_digest="sha256:" + hashlib.sha256(b"parc-demo-suite").hexdigest(),
+        protocol_versions=["0.1"],
+        completed_at=_now(),
+        passed=1,
+        failed=0,
+    )
+    status, resp = notary("/register", {"badge": badge})
+    assert status == 200, f"anchor registration failed: {resp}"
+    return resp["key"]
+
+
 def main() -> None:
     print(f"Notary: {NOTARY_URL}")
     info = json.loads(urllib.request.urlopen(f"{NOTARY_URL}/", timeout=30).read())
     notary_did = info["notary_did"]
     print(f"Pinned notary did:key: {notary_did}\n")
+
+    # 0. Certification bootstraps anchoring.
+    anchor_did = certify_anchor_counterparty()
+    print(f"[0] counterparty-0 certified on the register -> anchor: {anchor_did[:24]}...")
 
     # 1-2. Earn in Chapter A, mint the credential.
     receipts = [earn_receipt(AGENT, CP_SKS[i], f"consulting engagement #{i + 1}")
@@ -263,6 +302,22 @@ def main() -> None:
     assert status == 422, f"notary must refuse the wash credential: {resp}"
     stage = resp["detail"]["assessment"]["stage"]
     print(f"[N] REFUSED self-dealing credential (uncorroborated -> score 0): stage={stage}")
+
+    # 5c. Refusal: sybil corroboration — recomputes PERFECTLY, touches no anchor.
+    sybil_receipts = [earn_receipt(SYBIL, SYBIL_CP_SKS[i], f"sybil deal #{i}")
+                      for i in range(3)]
+    sybil = mint(SYBIL, sybil_receipts)
+    sybil_score = sybil["vc"]["credentialSubject"]["reputation_score"]
+    status, resp = notary("/countersign-parc", {
+        "credential": sybil["vc"],
+        "ledger": sybil["ledger"],
+        "min_reputation_score": CHAPTER_B_BAR,
+    })
+    assert status == 422, f"notary must refuse the sybil credential: {resp}"
+    a = resp["detail"]["assessment"]
+    assert a["stage"] == "anchor_absent", a
+    print(f"[N] REFUSED sybil credential (score {sybil_score} recomputes, clears the "
+          f"bar, but no certified did ever co-signed): stage={a['stage']}")
 
     print("\nPortability proven: reputation earned in A, stamped by a neutral notary")
     print("that recomputed it, admitted in B offline — no server trusted, twice checked.")
