@@ -45,6 +45,46 @@ curl -X POST https://town-notary-production.up.railway.app/register \
 curl https://town-notary-production.up.railway.app/register
 ```
 
+## Portable reputation (PARC)
+
+Badges answer "did this runtime pass the suite?" — a point-in-time claim, and
+the composition other skills already use (e.g. registering a contract hash at
+signing time). The PARC endpoints answer a different question: **can this
+agent's accumulated standing cross a trust-domain border?**
+
+An agent's home chapter mints a [PARC](https://pypi.org/project/sm-parc/)
+credential (a W3C VC committing to a `nanda-rep/0.2` receipts ledger). The
+Notary — as a neutral rung-2 — verifies the issuer proof and **recomputes the
+merkle root and the corroborated score from the presented receipts** before
+stamping with `method: "verified-recomputed"`. A valid signature is not a
+stamp: an issuer-inflated, genuinely re-signed score is refused
+(`score_mismatch`), and a self-dealing history honestly recomputes to ~0.
+
+```bash
+# Read-only: verify + recompute a credential against its ledger
+curl -X POST https://town-notary-production.up.railway.app/verify-parc \
+  -H 'Content-Type: application/json' \
+  -d '{"credential": {...}, "ledger": {...}, "min_reputation_score": 0.5}'
+
+# Stamp it (422 if it does not recompute)
+curl -X POST https://town-notary-production.up.railway.app/countersign-parc \
+  -H 'Content-Type: application/json' \
+  -d '{"credential": {...}, "ledger": {...}, "min_reputation_score": 0.5}'
+```
+
+The full border-crossing story — earn in Chapter A, notary recomputes and
+stamps, Chapter B admits **offline** trusting only the Notary's pinned
+did:key and its own arithmetic — is runnable end to end:
+
+```bash
+pip install sm-parc sm-conformance
+python examples/parc_portability_demo.py                    # against the live Notary
+NOTARY_URL=http://127.0.0.1:8000 python examples/parc_portability_demo.py
+```
+
+The stamp attests *verification + recomputation*, never issuer endorsement —
+a relying party that wants issuer vetting applies its own allowlist on top.
+
 ## Endpoints
 
 | Method | Path | What it does |

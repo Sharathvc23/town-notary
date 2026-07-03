@@ -41,6 +41,30 @@ format itself.
 | **O6** | **Denial of service / resource exhaustion.** Hammer the endpoints, or feed slow/large `badge_url`s. | per-fetch 8 s timeout + 1 MB cap | **no rate limiting**; the in-memory register grows unbounded until restart |
 | **O7** | **Register volatility.** The register is in-memory and clears on restart/redeploy — a "listed" runtime can silently vanish. | documented as demo-grade | not durable; back `REGISTER` with sqlite/redis for production (verification logic is unchanged) |
 
+### PARC endpoints (portable reputation)
+
+The `/verify-parc` and `/countersign-parc` surface inherits O1–O7 and adds:
+
+- **P1 — Inflated-but-signed scores.** A trusted-looking issuer re-signs a
+  bumped score. Mitigated by construction: the Notary recomputes the merkle
+  root and nanda-rep/0.2 scores from the presented ledger; divergence is a 422
+  (`score_mismatch`). The stamp is therefore *recomputation*, not deference.
+- **P2 — Withheld receipts.** A presenter drops bad receipts from the ledger.
+  Mitigated: the credential's signed `receipt_count` and merkle root must both
+  match the presented ledger (sm-parc's anti-withholding checks).
+- **P3 — Recompute-cost DoS.** A hostile ledger forces expensive verification.
+  Mitigated: `PARC_MAX_RECEIPTS` (5000) request cap plus the same 1 MB / SSRF
+  fetch guards as badges.
+- **P4 — Stamp overclaim.** Relying parties reading the stamp as issuer
+  endorsement. Mitigated in-band: the signed method is `verified-recomputed`
+  and every assessment carries `"attests": "... NOT issuer endorsement"`.
+  Residual: an inline single-subject ledger is a star graph — it exposes
+  self-dealing but structurally cannot reveal an N-party collusion ring
+  (sm-parc's documented inline-mode residual; ring detection needs the
+  published-ledger mode, out of scope for this service today).
+- **P5 — Timestamp trust.** `countersigned_at` sits outside the signed payload
+  (family-consistent with the badge envelope); treat it as advisory.
+
 ## 4. Explicit non-goals
 
 - **Identity vetting** of registrants — the Notary certifies *badges*, not who controls a key.

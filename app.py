@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import json
+import base64
 import socket
 import ipaddress
 import urllib.request
@@ -37,10 +38,16 @@ from sm_conformance import (
     verify_countersigned,
     is_countersigned,
     counter_sign,
+    canonical_json,
     derive_did_key,
     VerificationError,
     CountersignError,
 )
+import jcs
+
+from sm_arp import verify_receipt
+from sm_parc import AdmissionPolicy as ParcAdmissionPolicy
+from sm_parc import admit as parc_admit
 
 app = FastAPI(title="The Town Notary", version="0.1.0")
 
@@ -68,6 +75,12 @@ REGISTER: dict[str, dict[str, Any]] = {}
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_z() -> str:
+    # RFC 3339 UTC at second precision ("...Z") — the exact shape sm-parc's
+    # validity-window comparison and sm-arp's issued_at validation expect.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _host_is_public(host: str) -> bool:
@@ -207,6 +220,98 @@ def _resolve(req) -> dict[str, Any]:
     raise HTTPException(400, "provide either `badge` (JSON) or `badge_url`")
 
 
+# --- Portable reputation (PARC) -----------------------------------------------
+# A conformance badge attests a point-in-time run; a PARC credential ports an
+# agent's ACCUMULATED standing across trust domains. The Notary's role here is
+# the neutral rung-2: it verifies the issuer's proof and — crucially — RECOMPUTES
+# the nanda-rep/0.2 scores from the presented receipts ledger before stamping.
+# A valid signature is not a stamp: an issuer-inflated, genuinely re-signed
+# score fails recomputation and is refused.
+#
+# What the stamp attests (and only this): the credential's proof verifies under
+# its embedded issuer did:key, the presented ledger recomputes exactly to the
+# signed merkle root and scores, and the corroborated score clears the caller's
+# bar. It is NOT an endorsement of the issuer — a relying party that wants
+# issuer vetting applies its own trusted_issuers policy on top.
+
+# Bound the SCC/recompute work a hostile ledger can demand from the service.
+PARC_MAX_RECEIPTS = 5000
+
+
+def _receipt_is_valid(receipt: dict[str, Any]) -> bool:
+    """The ARP verifier the recompute path runs per receipt (strict mode)."""
+    return verify_receipt(receipt).ok
+
+
+class ParcReq(BaseModel):
+    credential: Optional[dict[str, Any]] = None
+    credential_url: Optional[str] = None
+    # The subject's presented Receipts Ledger (travels alongside the VC; the
+    # credential commits to it via behavioral_merkle_root).
+    ledger: Optional[dict[str, Any]] = None
+    ledger_url: Optional[str] = None
+    # The bar the corroborated, recomputed score must clear for a stamp.
+    min_reputation_score: float = 0.0
+
+
+def _resolve_parc(req: ParcReq) -> tuple[dict[str, Any], dict[str, Any]]:
+    if req.credential is not None:
+        credential = req.credential
+    elif req.credential_url:
+        credential = _fetch_badge(req.credential_url)
+    else:
+        raise HTTPException(400, "provide either `credential` (JSON) or `credential_url`")
+    if req.ledger is not None:
+        ledger = req.ledger
+    elif req.ledger_url:
+        ledger = _fetch_badge(req.ledger_url)
+    else:
+        raise HTTPException(400, "provide either `ledger` (JSON) or `ledger_url`")
+    receipts = ledger.get("receipts")
+    if isinstance(receipts, list) and len(receipts) > PARC_MAX_RECEIPTS:
+        raise HTTPException(413, f"ledger exceeds {PARC_MAX_RECEIPTS} receipts")
+    return credential, ledger
+
+
+def _assess_parc(credential: dict[str, Any], ledger: dict[str, Any],
+                 min_reputation_score: float) -> dict[str, Any]:
+    """Verify + RECOMPUTE a PARC credential against its presented ledger.
+
+    The issuer set is `{the credential's own issuer}` on purpose: the stamp
+    attests verification + recomputation, not issuer endorsement (mirrors the
+    honest `method: verified` posture of badge counter-signing). Everything
+    else is sm-parc's inline admission: proof, validity window, scoring method
+    pin (nanda-rep/0.2 only), anti-withholding receipt count, merkle root
+    recompute, score recompute, threshold.
+    """
+    issuer = credential.get("issuer", "")
+    policy = ParcAdmissionPolicy(
+        trusted_issuers={issuer} if isinstance(issuer, str) and issuer else set(),
+        min_reputation_score=min_reputation_score,
+    )
+    res = parc_admit(credential, policy=policy, ledger=ledger,
+                     is_valid=_receipt_is_valid, now=_now_z())
+    subject = credential.get("credentialSubject") or {}
+    certified = bool(res.ok)
+    reasons = [res.detail if res.detail else res.stage]
+    if certified:
+        reasons = ["clean: proof, validity window, ledger recomputation, "
+                   "and score threshold all OK"]
+    return {
+        "certified": certified,
+        "stage": res.stage,
+        "subject_did": subject.get("id"),
+        "issuer_did": issuer,
+        "scoring_method": subject.get("scoring_method"),
+        "claimed": {k: subject.get(k) for k in
+                    ("reputation_score", "validity_rate", "corroboration_rate",
+                     "receipt_count")},
+        "min_reputation_score": min_reputation_score,
+        "attests": "proof verified + ledger recomputed; NOT issuer endorsement",
+        "reasons": reasons,
+    }
+
+
 # --- Endpoints ---------------------------------------------------------------
 @app.get("/")
 def info():
@@ -216,7 +321,8 @@ def info():
         "notary_did": NOTARY_DID,
         "registered": len(REGISTER),
         "endpoints": ["POST /verify", "POST /register", "GET /register",
-                      "GET /inspect", "POST /countersign"],
+                      "GET /inspect", "POST /countersign",
+                      "POST /verify-parc", "POST /countersign-parc"],
     }
 
 
@@ -275,3 +381,51 @@ def countersign(req: CountersignReq):
     stamped = counter_sign(badge, LAB_SEED, _now(), method=req.method)
     return {"countersigned_by": NOTARY_DID, "method": req.method,
             "assessment": a, "badge": stamped}
+
+
+@app.post("/verify-parc")
+def verify_parc(req: ParcReq):
+    """Verify + recompute a PARC reputation credential. Read-only, stamps nothing."""
+    credential, ledger = _resolve_parc(req)
+    return _assess_parc(credential, ledger, req.min_reputation_score)
+
+
+@app.post("/countersign-parc")
+def countersign_parc(req: ParcReq):
+    """Rung-2 for portable reputation: recompute, then stamp under the Notary key.
+
+    The envelope mirrors the sm-conformance counter-signed badge shape —
+    `payload` (signed), `countersigned_by`, `countersigned_at`,
+    `countersignature` = base64 Ed25519 over the RFC 8785 (JCS) canonical bytes
+    of `payload` (the same canonical signing path as the credential's own
+    proof; badges use the float-free `canonical_json`, credentials carry float
+    scores so they sign under JCS) — with
+    `credential` in place of `badge` and the honest method
+    `verified-recomputed`: the Notary verified the proof AND re-derived the
+    merkle root + nanda-rep/0.2 scores from the presented ledger. It did not
+    witness the underlying interactions, and the stamp is not issuer
+    endorsement. A relying party in another trust domain can verify the stamp
+    offline against the Notary's published did:key, then recompute the ledger
+    itself — trust the maths twice, no server ever.
+    """
+    credential, ledger = _resolve_parc(req)
+    a = _assess_parc(credential, ledger, req.min_reputation_score)
+    if not a["certified"]:
+        raise HTTPException(422, {
+            "refused": "will not counter-sign a credential that does not recompute",
+            "assessment": a,
+        })
+    payload = {
+        "schema_version": 1,
+        "credential": credential,
+        "method": "verified-recomputed",
+    }
+    signature = _priv.sign(jcs.canonicalize(payload))
+    stamped = {
+        "payload": payload,
+        "countersigned_by": NOTARY_DID,
+        "countersigned_at": _now(),
+        "countersignature": base64.b64encode(signature).decode("ascii"),
+    }
+    return {"countersigned_by": NOTARY_DID, "method": "verified-recomputed",
+            "assessment": a, "credential": stamped}

@@ -72,6 +72,49 @@ POST /countersign
     { "countersigned_by": "did:key:z6Mk...(the Notary)", "method": "verified",
       "assessment": { ...the gate result... }, "badge": { ...stamped badge... } }
 
+POST /verify-parc
+  Portable reputation: verify + RECOMPUTE a PARC reputation credential (a W3C
+  VC over a nanda-rep/0.2 Receipts Ledger) against its presented ledger.
+  Read-only, stamps nothing. A conformance badge attests a point-in-time run;
+  a PARC credential ports an agent's ACCUMULATED standing across trust
+  domains — the Notary re-derives the merkle root and the corroborated score
+  from the receipts instead of trusting the signed numbers.
+  Body: { "credential": { ...PARC VC... },   // (or "credential_url")
+          "ledger": { ...receipts ledger... }, // (or "ledger_url")
+          "min_reputation_score": 0.5 }        // optional bar, default 0.0
+  Response:
+    { "certified": true, "stage": "admitted",
+      "subject_did": "did:key:z6Mk...", "issuer_did": "did:key:z6Mk...",
+      "claimed": {"reputation_score": 15.0, "validity_rate": 1.0,
+                  "corroboration_rate": 1.0, "receipt_count": 3},
+      "attests": "proof verified + ledger recomputed; NOT issuer endorsement",
+      "reasons": ["clean: proof, validity window, ledger recomputation, and score threshold all OK"] }
+
+POST /countersign-parc
+  Rung-2 for portable reputation. Same checks as /verify-parc; if they clear,
+  the Notary counter-signs the credential under its own key with the honest
+  method "verified-recomputed": it verified the issuer proof AND re-derived
+  the root + scores from the presented ledger. It did NOT witness the
+  underlying interactions, and the stamp is NOT issuer endorsement. Because
+  the score is recomputed, a signature alone buys nothing: an
+  issuer-inflated, genuinely re-signed score is refused (422, stage
+  "score_mismatch"), and a self-dealing (uncorroborated) history honestly
+  recomputes to ~0 and is refused at the bar.
+  The countersignature is base64 Ed25519 over the RFC 8785 (JCS) canonical
+  bytes of `payload` — the same canonical signing path as the credential's
+  own proof — so any relying party can verify it fully offline against the
+  Notary's published did:key.
+  Body: same shape as /verify-parc.
+  Response:
+    { "countersigned_by": "did:key:z6Mk...(the Notary)",
+      "method": "verified-recomputed",
+      "assessment": { ...the gate result... },
+      "credential": {
+        "payload": { "schema_version": 1, "credential": { ...VC... },
+                     "method": "verified-recomputed" },
+        "countersigned_by": "did:key:z6Mk...", "countersigned_at": "<rfc3339>",
+        "countersignature": "<base64 Ed25519 over jcs(payload)>" } }
+
 ## How the agent should use this
 1. After running your protocol conformance suite, you hold a signed badge
    (your `.well-known/conformance.json`). To get listed, POST it to
@@ -87,3 +130,10 @@ POST /countersign
    stamp time (signature, schema, pass-gate, and any pins you set) — it is not a
    re-run of your suite. Treat it as "an independent party checked this", not as
    fresh test evidence.
+5. To carry your REPUTATION (not just conformance) into a new trust domain:
+   have your home chapter mint a PARC credential over your receipts ledger,
+   POST {credential, ledger} to /countersign-parc, and present the stamped
+   envelope at the destination. The destination verifies the Notary stamp
+   offline against the Notary did:key above, then recomputes your ledger
+   itself — it never has to trust your home chapter or any live server. See
+   examples/parc_portability_demo.py for the full A -> Notary -> B flow.
