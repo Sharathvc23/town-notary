@@ -53,8 +53,10 @@ The `/verify-parc` and `/countersign-parc` surface inherits O1–O7 and adds:
   Mitigated: the credential's signed `receipt_count` and merkle root must both
   match the presented ledger (sm-parc's anti-withholding checks).
 - **P3 — Recompute-cost DoS.** A hostile ledger forces expensive verification.
-  Mitigated: `PARC_MAX_RECEIPTS` (5000) request cap plus the same 1 MB / SSRF
-  fetch guards as badges.
+  Mitigated: `PARC_MAX_RECEIPTS` (5000) request cap, a 5 MB inline body cap
+  (Content-Length-based; a chunked request without Content-Length bypasses the
+  early check and is bounded only by the platform), plus the same 1 MB / SSRF
+  fetch guards as badges. No rate limiting — rely on the platform's.
 - **P4 — Stamp overclaim.** Relying parties reading the stamp as issuer
   endorsement. Mitigated in-band: the signed method is `verified-recomputed`
   and every assessment carries `"attests": "... NOT issuer endorsement"`.
@@ -62,8 +64,20 @@ The `/verify-parc` and `/countersign-parc` surface inherits O1–O7 and adds:
   self-dealing but structurally cannot reveal an N-party collusion ring
   (sm-parc's documented inline-mode residual; ring detection needs the
   published-ledger mode, out of scope for this service today).
-- **P5 — Timestamp trust.** `countersigned_at` sits outside the signed payload
-  (family-consistent with the badge envelope); treat it as advisory.
+- **P5 — Timestamp trust.** RESOLVED for PARC stamps: `countersigned_at` is
+  inside the signed payload (the top-level copy is display-only). The badge
+  envelope's timestamp remains advisory (sm-conformance format, unchanged).
+- **P6 — Cross-protocol signature confusion.** The Notary key signs badge
+  counter-signatures and PARC stamps. PARC payloads carry an explicit signed
+  `"type": "parc-countersign/1"` tag, so a stamp can never be replayed as a
+  badge attestation or vice versa.
+- **P7 — Register durability.** The register persists to `REGISTER_PATH`
+  (atomic tmp+rename writes) and boots from `data/register-seed.json` for
+  entries issued before persistence existed — a redeploy no longer
+  invalidates already-issued registrations (e.g. notarized A2A contracts).
+  New entries now store the full badge, so they are re-verifiable; the
+  grandfathered seed entries are assessments only and are trusted on the
+  prior instance's verification.
 
 ## 4. Explicit non-goals
 

@@ -110,9 +110,11 @@ POST /countersign-parc
       "method": "verified-recomputed",
       "assessment": { ...the gate result... },
       "credential": {
-        "payload": { "schema_version": 1, "credential": { ...VC... },
-                     "method": "verified-recomputed" },
-        "countersigned_by": "did:key:z6Mk...", "countersigned_at": "<rfc3339>",
+        "payload": { "type": "parc-countersign/1", "schema_version": 1,
+                     "credential": { ...VC... },
+                     "method": "verified-recomputed",
+                     "countersigned_at": "<rfc3339, SIGNED>" },
+        "countersigned_by": "did:key:z6Mk...", "countersigned_at": "<display copy>",
         "countersignature": "<base64 Ed25519 over jcs(payload)>" } }
 
 ## How the agent should use this

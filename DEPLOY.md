@@ -31,6 +31,12 @@ If those answer, the Base URL in skill.md is already set to `<your-url>`; submit
 at https://nandatown.projectnanda.org/skills
 
 ## Note on persistence
-The register is in-memory and clears on restart/redeploy. Fine for the
-demo/hackathon. For durability, back `REGISTER` in app.py with a Railway Postgres
-or Redis plugin — the verification logic doesn't change.
+The register persists to `REGISTER_PATH` with atomic writes and boots from the
+committed `data/register-seed.json` (entries grandfathered from before
+persistence existed). In production, mount a volume and point at it:
+
+    railway volume add --mount-path /data
+    railway variables --set "REGISTER_PATH=/data/register.json"
+
+Without `REGISTER_PATH` the service still boots with the seeded entries, but
+registrations made after deploy will not survive the NEXT restart.

@@ -1,0 +1,94 @@
+{
+ "did:key:z6MknenEgG4PjBsQmUH9D9FKcmxWdy8Vhd88wSfKzqy8mfnv": {
+  "certified": true,
+  "completed_at": "2026-06-29T14:00:00Z",
+  "countersigned": false,
+  "counts": {
+   "failed": 0,
+   "passed": 1,
+   "skipped": 0,
+   "xfailed": 0,
+   "xpassed": 0
+  },
+  "grandfathered": "seeded from pre-persistence live register snapshot 2026-07-03",
+  "protocol_versions": [
+   "0.3"
+  ],
+  "reasons": [
+   "clean: signature, schema, pass-gate, and admission gates all OK"
+  ],
+  "registered_at": "2026-06-29T17:45:04.378883+00:00",
+  "runtime": "a2a-20260629-test01",
+  "signer_did": "did:key:z6MknenEgG4PjBsQmUH9D9FKcmxWdy8Vhd88wSfKzqy8mfnv",
+  "suite_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ "did:key:z6Mknx6wRXZN1sV4MRHAc2U7vMBTMNkKsWmFSpMHT4uDPVBE": {
+  "certified": true,
+  "completed_at": "2026-06-29T17:46:04.951593Z",
+  "countersigned": false,
+  "counts": {
+   "failed": 0,
+   "passed": 1,
+   "skipped": 0,
+   "xfailed": 0,
+   "xpassed": 0
+  },
+  "grandfathered": "seeded from pre-persistence live register snapshot 2026-07-03",
+  "protocol_versions": [
+   "0.3"
+  ],
+  "reasons": [
+   "clean: signature, schema, pass-gate, and admission gates all OK"
+  ],
+  "registered_at": "2026-06-29T17:46:05.061749+00:00",
+  "runtime": "a2a-20260629-a33870",
+  "signer_did": "did:key:z6Mknx6wRXZN1sV4MRHAc2U7vMBTMNkKsWmFSpMHT4uDPVBE",
+  "suite_digest": "sha256:9a81d49ec02588b632f5f5d19beef7677190ddbf3cc3de28b314e9c0460c9ec3"
+ },
+ "did:key:z6MkqPGEfNmz63XxZS6iRjE6RtDL9kQjHMexQiufi4qJTQB6": {
+  "certified": true,
+  "completed_at": "2026-06-29T18:12:53.212153Z",
+  "countersigned": false,
+  "counts": {
+   "failed": 0,
+   "passed": 1,
+   "skipped": 0,
+   "xfailed": 0,
+   "xpassed": 0
+  },
+  "grandfathered": "seeded from pre-persistence live register snapshot 2026-07-03",
+  "protocol_versions": [
+   "0.3"
+  ],
+  "reasons": [
+   "clean: signature, schema, pass-gate, and admission gates all OK"
+  ],
+  "registered_at": "2026-06-29T18:12:53.373391+00:00",
+  "runtime": "a2a-20260629-dec653",
+  "signer_did": "did:key:z6MkqPGEfNmz63XxZS6iRjE6RtDL9kQjHMexQiufi4qJTQB6",
+  "suite_digest": "sha256:db1dfcbcbe55fa0b6f613e9db81bc41fbc5872c554674c7bbe5dce3884bf2cba"
+ },
+ "did:key:z6MkvDqGT54cXesYGvABpF1UapVNwjCqRcafi4Px6Thv5T3Z": {
+  "certified": true,
+  "completed_at": "2026-06-18T18:46:01.794632+00:00",
+  "countersigned": false,
+  "counts": {
+   "failed": 0,
+   "passed": 50,
+   "skipped": 0,
+   "xfailed": 0,
+   "xpassed": 0
+  },
+  "grandfathered": "seeded from pre-persistence live register snapshot 2026-07-03",
+  "protocol_versions": [
+   "0.3"
+  ],
+  "reasons": [
+   "clean: signature, schema, pass-gate, and admission gates all OK"
+  ],
+  "registered_at": "2026-06-18T21:09:04.391744+00:00",
+  "runtime": "alpha-runtime",
+  "signer_did": "did:key:z6MkvDqGT54cXesYGvABpF1UapVNwjCqRcafi4Px6Thv5T3Z",
+  "suite_digest": "sha256:abababababababababababababababababababababababababababababababab"
+ }
+}

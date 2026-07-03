@@ -187,7 +187,10 @@ def chapter_b_admit(stamped: dict[str, Any], ledger: dict[str, Any],
         jcs.canonicalize(payload),
     )
     print("  [B] notary countersignature verifies against the pinned did:key")
+    assert payload["type"] == "parc-countersign/1", "wrong protocol under the notary key"
     assert payload["method"] == "verified-recomputed"
+    print(f"  [B] stamp is domain-tagged and timestamped inside the signature "
+          f"({payload['countersigned_at']})")
 
     vc = payload["credential"]
     assert verify_credential_proof(vc), "issuer proof failed"

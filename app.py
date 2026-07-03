@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
@@ -47,9 +48,24 @@ import jcs
 
 from sm_arp import verify_receipt
 from sm_parc import AdmissionPolicy as ParcAdmissionPolicy
+from sm_parc import AdmissionResult as ParcAdmissionResult
 from sm_parc import admit as parc_admit
 
-app = FastAPI(title="The Town Notary", version="0.1.0")
+app = FastAPI(title="The Town Notary", version="0.2.0")
+
+
+@app.middleware("http")
+async def _limit_body(request, call_next):
+    # Reject oversized inline bodies before parsing. (Chunked uploads without
+    # Content-Length are not size-checked here — see THREATMODEL P3.)
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) > MAX_BODY_BYTES:
+                return JSONResponse({"detail": "body too large"}, status_code=413)
+        except ValueError:
+            return JSONResponse({"detail": "bad content-length"}, status_code=400)
+    return await call_next(request)
 
 # --- The Notary's own lab key (rung-2 counter-signing) -----------------------
 # Set NOTARY_SEED to 64 hex chars (32 bytes) in production so the Notary's
@@ -68,9 +84,49 @@ _pub32 = _priv.public_key().public_bytes(
 )
 NOTARY_DID = derive_did_key(_pub32)
 
-# In-memory public register. Non-persistent: a restart clears it. For a real
-# deployment back this with sqlite/redis; the verification logic is unchanged.
-REGISTER: dict[str, dict[str, Any]] = {}
+# The public register. Persisted as JSON at REGISTER_PATH (point it at a
+# mounted volume, e.g. /data/register.json) with atomic writes; entries seeded
+# from data/register-seed.json cover registrations made before persistence
+# existed (grandfathered), so a redeploy never invalidates already-issued
+# registrations. Without REGISTER_PATH the register still boots from the seed
+# but new registrations do not survive a restart — set it in production.
+REGISTER_PATH = os.environ.get("REGISTER_PATH", "")
+_SEED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "data", "register-seed.json")
+
+# Cap inbound request bodies (inline credentials/ledgers/badges). The URL
+# fetcher has its own 1 MB cap; this closes the inline path.
+MAX_BODY_BYTES = 5_000_000
+
+
+def _load_register() -> dict[str, dict[str, Any]]:
+    """Grandfathered seed first, persisted state overlaid (persisted wins)."""
+    merged: dict[str, dict[str, Any]] = {}
+    for path in (_SEED_PATH, REGISTER_PATH):
+        if not path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                merged.update(json.load(f))
+        except FileNotFoundError:
+            continue
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"WARNING: could not load register from {path}: {e}")
+    return merged
+
+
+def _save_register() -> None:
+    """Atomic write (tmp + rename) so a crash mid-write never corrupts state."""
+    if not REGISTER_PATH:
+        return
+    tmp = REGISTER_PATH + ".tmp"
+    os.makedirs(os.path.dirname(REGISTER_PATH) or ".", exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(REGISTER, f, sort_keys=True)
+    os.replace(tmp, REGISTER_PATH)
+
+
+REGISTER: dict[str, dict[str, Any]] = _load_register()
 
 
 def _now() -> str:
@@ -289,8 +345,16 @@ def _assess_parc(credential: dict[str, Any], ledger: dict[str, Any],
         trusted_issuers={issuer} if isinstance(issuer, str) and issuer else set(),
         min_reputation_score=min_reputation_score,
     )
-    res = parc_admit(credential, policy=policy, ledger=ledger,
-                     is_valid=_receipt_is_valid, now=_now_z())
+    try:
+        res = parc_admit(credential, policy=policy, ledger=ledger,
+                         is_valid=_receipt_is_valid, now=_now_z())
+    except Exception:
+        # A hostile credential/ledger must yield a typed refusal, never a 500
+        # (and never a stack trace). The generic catch is deliberate: sm-parc
+        # rejects malformed inputs with typed results, so anything that still
+        # raises is by definition input we do not want to reason further about.
+        res = ParcAdmissionResult(False, "malformed_credential",
+                                  "credential or ledger not processable")
     subject = credential.get("credentialSubject") or {}
     certified = bool(res.ok)
     reasons = [res.detail if res.detail else res.stage]
@@ -335,12 +399,17 @@ def verify(req: VerifyReq):
 @app.post("/register")
 def register(req: VerifyReq):
     """Verify, then enter a passing runtime in the public register."""
-    a = _assess(_resolve(req), req.expected_suite_digest, req.max_age_days)
+    badge = _resolve(req)
+    a = _assess(badge, req.expected_suite_digest, req.max_age_days)
     if not a["certified"]:
         raise HTTPException(422, {"refused": "badge did not certify", "assessment": a})
     key = a["signer_did"] or a["runtime"]
-    entry = {**a, "registered_at": _now()}
+    # Keep the full badge: it makes entries re-verifiable and migratable — the
+    # original register stored only assessments, which is why pre-persistence
+    # entries had to be grandfathered rather than re-verified.
+    entry = {**a, "registered_at": _now(), "badge": badge}
     REGISTER[key] = entry
+    _save_register()
     return {"registered": True, "key": key, "entry": entry}
 
 
@@ -415,16 +484,24 @@ def countersign_parc(req: ParcReq):
             "refused": "will not counter-sign a credential that does not recompute",
             "assessment": a,
         })
+    stamped_at = _now_z()
     payload = {
+        # Domain separation: the Notary key signs two protocols (badge
+        # counter-signatures and these); the explicit type tag prevents any
+        # cross-protocol confusion regardless of schema quirks. The timestamp
+        # lives INSIDE the signed payload — unlike the badge envelope's
+        # advisory copy — because reputation decays and stamp age matters.
+        "type": "parc-countersign/1",
         "schema_version": 1,
         "credential": credential,
         "method": "verified-recomputed",
+        "countersigned_at": stamped_at,
     }
     signature = _priv.sign(jcs.canonicalize(payload))
     stamped = {
         "payload": payload,
         "countersigned_by": NOTARY_DID,
-        "countersigned_at": _now(),
+        "countersigned_at": stamped_at,  # display copy; the signed one governs
         "countersignature": base64.b64encode(signature).decode("ascii"),
     }
     return {"countersigned_by": NOTARY_DID, "method": "verified-recomputed",
