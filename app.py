@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
@@ -427,6 +427,14 @@ def _assess_parc(credential: dict[str, Any], ledger: dict[str, Any],
 
 
 # --- Endpoints ---------------------------------------------------------------
+@app.get("/skill.md")
+def skill_md():
+    """The SkillMD, served from the deployed tree — always matches the code."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skill.md")
+    with open(path, encoding="utf-8") as f:
+        return PlainTextResponse(f.read(), media_type="text/markdown")
+
+
 @app.get("/")
 def info():
     return {
@@ -436,7 +444,9 @@ def info():
         "registered": len(REGISTER),
         "endpoints": ["POST /verify", "POST /register", "GET /register",
                       "GET /inspect", "POST /countersign",
-                      "POST /verify-parc", "POST /countersign-parc"],
+                      "POST /verify-parc", "POST /countersign-parc",
+                      "GET /skill.md"],
+        "skill_md": "/skill.md",
     }
 
 
