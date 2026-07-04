@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import json
+import importlib.metadata
 import base64
 import socket
 import ipaddress
@@ -439,6 +440,11 @@ def skill_md():
 def info():
     return {
         "office": "The Town Notary",
+        "versions": {
+            "service": app.version,
+            "sm_parc": importlib.metadata.version("sm-parc"),
+            "sm_conformance": importlib.metadata.version("sm-conformance"),
+        },
         "purpose": "Verify and register agent conformance badges; issue lab counter-signatures.",
         "notary_did": NOTARY_DID,
         "registered": len(REGISTER),
