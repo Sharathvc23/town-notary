@@ -15,13 +15,14 @@ missing rung: an agent's ACCUMULATED STANDING crossing a trust-domain border.
      admits the agent offline: it verifies the Notary's countersignature
      against the Notary's pinned did:key, then recomputes the ledger itself.
 
-Step 0 closes the sybil hole: did:keys are free to mint, so corroboration
-alone is forgeable. The Notary's ANCHOR RULE requires the history to include
-at least one receipt genuinely co-signed by a certified did. So the demo
-first gets counterparty-0 CERTIFIED (a conformance badge on the register) —
-the conformance rung bootstrapping the reputation rung.
+Step 0 makes counterparty-0 an ANCHOR. did:keys are free to mint, so
+corroboration alone can be self-made; the Notary's anchor rule requires the
+history to include at least one receipt genuinely co-signed by an anchor did.
+A self-signed registration only LISTS a key — an anchor needs a badge
+counter-signed by a lab the Notary is configured to trust (NOTARY_LAB_DIDS).
+The demo plays that lab with a DEMO lab key.
 
-Three refusals prove the stamp means something:
+Three refusals show what the stamp checks:
 
   * an issuer-INFLATED credential (score bumped, genuinely re-signed by
     Chapter A — the signature verifies!) is refused: recomputation catches it;
@@ -29,18 +30,22 @@ Three refusals prove the stamp means something:
     score 0 and is refused at the bar;
   * a SYBIL agent whose receipts are all co-signed by freshly minted
     counterparties RECOMPUTES PERFECTLY and clears the bar — and is refused
-    anchor_absent: nothing in its history touches a certified did.
+    anchor_absent: nothing in its history touches an anchor did.
 
-Run against the live Notary (default) or a local one:
+Every key here, including the demo lab, comes from a PUBLISHED seed. Run it
+against a LOCAL Notary configured for the demo — never put the demo lab or
+demo suite into a real Notary's configuration:
 
-    python examples/parc_portability_demo.py
-    NOTARY_URL=http://127.0.0.1:8000 python examples/parc_portability_demo.py
+    eval "$(python examples/parc_portability_demo.py --env)"   # demo config
+    uvicorn app:app --port 8000 &
+    python examples/parc_portability_demo.py                   # NOTARY_URL defaults to local
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -50,7 +55,7 @@ import jcs
 from sm_arp import Identity, issue_receipt, new_receipt_id, verify_receipt
 from sm_arp.receipts import build_action
 from sm_arp.vrp import build_ledger, cosign_receipt, did_from_sk
-from sm_conformance import parse_did_key
+from sm_conformance import counter_sign, parse_did_key
 from sm_conformance.badge import build_badge
 from sm_parc import (
     AdmissionPolicy,
@@ -60,7 +65,7 @@ from sm_parc import (
     verify_credential_proof,
 )
 
-NOTARY_URL = os.environ.get("NOTARY_URL", "https://town-notary-production.up.railway.app")
+NOTARY_URL = os.environ.get("NOTARY_URL", "http://127.0.0.1:8000")
 
 # Deterministic cast (demo keys — never reuse for anything real).
 AGENT_SK = hashlib.sha256(b"portability-demo:agent").digest()
@@ -75,6 +80,14 @@ SYBIL_CP_SKS = [hashlib.sha256(f"portability-demo:sybil-cp-{i}".encode()).digest
                 for i in range(3)]
 CHAPTER_A_SK = hashlib.sha256(b"portability-demo:chapter-a").digest()
 CHAPTER_A_DID = did_from_private_key(CHAPTER_A_SK)
+# The demo lab that counter-signs counterparty-0's badge, and the demo suite.
+DEMO_LAB_SK = hashlib.sha256(b"portability-demo:lab").digest()
+DEMO_LAB_DID = did_from_sk(DEMO_LAB_SK)
+DEMO_PROTOCOL = "0.1"
+DEMO_SUITE_DIGEST = "sha256:" + hashlib.sha256(b"parc-demo-suite").hexdigest()
+# Root anchor for the demo Notary. It never co-signs anything here; it only
+# shows that NOTARY_ANCHORS and lab-promoted keys combine.
+DEMO_ROOT_ANCHOR = did_from_sk(hashlib.sha256(b"portability-demo:root-anchor").digest())
 
 # Chapter B's whole config: the Notary's pinned did:key (fetched once here for
 # convenience; a real Chapter B pins it out of band) and its own admission bar.
@@ -228,35 +241,55 @@ def chapter_b_admit(stamped: dict[str, Any], ledger: dict[str, Any],
 
 
 def certify_anchor_counterparty() -> str:
-    """Step 0: counterparty-0 earns a conformance badge and registers.
+    """Step 0: counterparty-0's badge, counter-signed by the demo lab, registers.
 
-    Its did:key thereby joins the Notary's anchor set: certified runtimes are
-    exactly the dids whose co-signatures the anchor rule counts. Idempotent —
-    re-registering the same signer overwrites its own entry.
+    Because the counter-signer is a configured lab (NOTARY_LAB_DIDS), the
+    registration's standing is "anchor" and counterparty-0's co-signatures
+    count for the anchor rule. A self-signed badge would only be "listed".
     """
     badge = build_badge(
         "parc-demo-anchor",
         signing_key32=CP_SKS[0],
-        suite_digest="sha256:" + hashlib.sha256(b"parc-demo-suite").hexdigest(),
-        protocol_versions=["0.1"],
+        suite_digest=DEMO_SUITE_DIGEST,
+        protocol_versions=[DEMO_PROTOCOL],
         completed_at=_now(),
         passed=1,
         failed=0,
     )
-    status, resp = notary("/register", {"badge": badge})
-    assert status == 200, f"anchor registration failed: {resp}"
+    envelope = counter_sign(badge, DEMO_LAB_SK, _now(), method="verified")
+    status, resp = notary("/register", {"badge": envelope})
+    if status != 200 or resp.get("standing") != "anchor":
+        sys.exit(
+            f"Step 0 did not produce an anchor (HTTP {status}, standing="
+            f"{resp.get('standing')}): {json.dumps(resp)[:400]}\n"
+            f"Start a LOCAL Notary with the demo configuration first:\n"
+            f'  eval "$(python {sys.argv[0]} --env)"')
     return resp["key"]
 
 
+def demo_env() -> str:
+    """Shell exports for a local demo Notary (published keys: local use only)."""
+    pins = json.dumps({DEMO_PROTOCOL: DEMO_SUITE_DIGEST})
+    return "\n".join([
+        f"export NOTARY_SUITE_PINS='{pins}'",
+        f"export NOTARY_LAB_DIDS='{DEMO_LAB_DID}'",
+        f"export NOTARY_ANCHORS='{DEMO_ROOT_ANCHOR}'",
+    ])
+
+
 def main() -> None:
+    if "--env" in sys.argv[1:]:
+        print(demo_env())
+        return
     print(f"Notary: {NOTARY_URL}")
     info = json.loads(urllib.request.urlopen(f"{NOTARY_URL}/", timeout=30).read())
     notary_did = info["notary_did"]
     print(f"Pinned notary did:key: {notary_did}\n")
 
-    # 0. Certification bootstraps anchoring.
+    # 0. A lab-countersigned registration makes counterparty-0 an anchor.
     anchor_did = certify_anchor_counterparty()
-    print(f"[0] counterparty-0 certified on the register -> anchor: {anchor_did[:24]}...")
+    print(f"[0] counterparty-0 registered with a lab counter-signature -> anchor: "
+          f"{anchor_did[:24]}...")
 
     # 1-2. Earn in Chapter A, mint the credential.
     receipts = [earn_receipt(AGENT, CP_SKS[i], f"consulting engagement #{i + 1}")
@@ -317,7 +350,7 @@ def main() -> None:
     a = resp["detail"]["assessment"]
     assert a["stage"] == "anchor_absent", a
     print(f"[N] REFUSED sybil credential (score {sybil_score} recomputes, clears the "
-          f"bar, but no certified did ever co-signed): stage={a['stage']}")
+          f"bar, but no anchor did ever co-signed): stage={a['stage']}")
 
     print("\nPortability proven: reputation earned in A, stamped by a neutral notary")
     print("that recomputed it, admitted in B offline — no server trusted, twice checked.")
