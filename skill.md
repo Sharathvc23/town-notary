@@ -2,10 +2,14 @@
 
 The town's standards office. An agent submits its signed conformance badge;
 the Notary verifies it offline against the badge's own `did:key`, checks it
-against admission gates, and — if it passes — enters the agent in a public
-register of certified runtimes. Before dealing with a stranger, an agent can
-ask the Notary whether that stranger is certified. The Notary can also issue
-an official lab counter-signature (a rung-2 stamp) on a badge.
+against admission gates (including a suite_digest pinned for each protocol
+version), and — if it passes — enters the agent in a public register of
+certified runtimes. A self-signed badge is "listed"; a badge counter-signed by
+a lab the Notary is configured to trust makes the key an "anchor". Before
+dealing with a stranger, an agent can ask the Notary whether that stranger is
+certified. The Notary can also issue an official lab counter-signature (a
+rung-2 stamp) on a badge. GET / shows the suite pins, lab dids and root
+anchors in force.
 
 Built on `sm-conformance`: a badge is an Ed25519 signature over canonical
 JSON recording which test suite a runtime passed and its pass/fail counts.
@@ -31,30 +35,40 @@ POST /verify
   Response:
     { "certified": true, "runtime": "alpha-runtime",
       "signer_did": "did:key:z6Mk...", "suite_digest": "sha256:ab..",
+      "suite_pinned": true,
       "counts": {"passed":50,"failed":0,"skipped":0,"xfailed":0,"xpassed":0},
-      "countersigned": false,
-      "reasons": ["clean: signature, schema, pass-gate, and admission gates all OK"] }
+      "countersigned": false, "countersigned_by": null, "lab_countersigned": false,
+      "reasons": ["clean: signature, schema, pass-gate, suite pin, and admission gates all OK"] }
+  A badge whose suite_digest is not pinned for every protocol version it lists
+  returns certified: false with a "suite not pinned: ..." reason.
 
 POST /register
   Verify, then enter a passing runtime in the public register. Refuses (422)
   any badge that does not certify (bad signature, wrong signer, tampered
-  payload, or a run with failures).
+  payload, a run with failures, or an unpinned suite).
+  Standing: "listed" for a self-signed badge; "anchor" for a badge
+  counter-signed by one of the Notary's configured labs. If the key is
+  already an anchor, a badge that is not lab-countersigned is refused (409).
+  Sending the identical badge again records nothing ("appended": false).
   Body: same shape as /verify.
   Response:
-    { "registered": true, "key": "did:key:z6Mk...", "entry": { ... } }
+    { "registered": true, "key": "did:key:z6Mk...", "standing": "listed",
+      "appended": true, "seq": 7, "entry": { ... } }
 
 GET /register
   The public roll of every certified runtime.
   Example:
     curl https://town-notary-production.up.railway.app/register
   Response:
-    { "count": 3, "register": [ { "runtime": "alpha-runtime", "certified": true, ... } ] }
+    { "count": 3, "anchors": 1, "head": {"seq": 7, "hash": "<sha256 hex>"},
+      "register": [ { "runtime": "alpha-runtime", "standing": "listed", ... } ] }
 
 GET /inspect?runtime={name}   (or ?did={did:key})
   Look up one runtime's standing before transacting with it.
   Example:
     curl "https://town-notary-production.up.railway.app/inspect?runtime=alpha-runtime"
-  Response: the register entry, or 404 if not certified.
+  Response: the register entry (with "standing"), or 404 if not on the register.
+  Runtime names are not unique; prefer ?did= when you know the did:key.
 
 POST /countersign
   The Notary re-attests a badge under its own key — an official stamp (rung-2 of
@@ -63,7 +77,9 @@ POST /countersign
   as /register (valid signature + schema, the pass-gate, and any suite/freshness
   pins you supply), and a badge that does not certify is refused (422). The
   `method` field records the claim — default "verified"; use "lab-rerun" only if
-  you actually re-ran the suite out of band.
+  you actually re-ran the suite out of band. The badge must also clear the
+  Notary's suite pins. Registering a Notary-stamped badge lists the key; it
+  does not make it an anchor (this endpoint stamps for anyone).
   Body: { "badge": { ... },           // (or "badge_url")
           "expected_suite_digest": "sha256:<hex>",   // optional gate, same as /register
           "max_age_days": 30,                         // optional gate
@@ -88,15 +104,18 @@ POST /verify-parc
       "claimed": {"reputation_score": 15.0, "validity_rate": 1.0,
                   "corroboration_rate": 1.0, "receipt_count": 3},
       "attests": "proof verified + ledger recomputed; NOT issuer endorsement",
-      "reasons": ["clean: proof, validity window, ledger recomputation, and score threshold all OK"] }
+      "anchored": true, "anchor_count": 4,
+      "reasons": ["clean: proof, validity window, ledger recomputation, score threshold, and anchor rule all OK"] }
 
 POST /countersign-parc
-  Rung-2 for portable reputation. Same checks as /verify-parc PLUS the anchor
-  rule: because did:keys are free to mint, corroboration alone is
-  sybil-forgeable, so the history must include at least one receipt genuinely
-  co-signed by an ANCHOR — any certified did:key on the Notary register (or a
-  configured NOTARY_ANCHORS did). Get a counterparty certified via /register
-  first, or expect a 422 with stage "anchor_absent". If the checks clear,
+  Rung-2 for portable reputation. Same checks as /verify-parc, which include
+  the anchor rule: because did:keys are free to mint, corroboration alone can
+  be self-made, so the history must include at least one receipt genuinely
+  co-signed by an ANCHOR — a configured NOTARY_ANCHORS did, or a key
+  registered with a badge counter-signed by a configured lab. A key
+  registered with only a self-signed badge is not an anchor. Otherwise expect
+  a 422 with stage "anchor_absent" (also returned when the Notary has no
+  anchors at all). If the checks clear,
   the Notary counter-signs the credential under its own key with the honest
   method "verified-recomputed": it verified the issuer proof AND re-derived
   the root + scores from the presented ledger. It did NOT witness the
@@ -128,9 +147,10 @@ POST /countersign-parc
    /register — or POST to /verify first if you only want to check it.
 2. Before doing business with another agent, GET /inspect?runtime=<them> (or
    pass their did:key). If they're not on the register, treat them as unproven.
-3. To pin trust to a specific test suite, pass expected_suite_digest on
-   /verify or /register — a badge for a weaker suite has a different digest
-   and will be refused.
+3. The Notary only certifies suites it pins (see GET /). To pin trust to a
+   specific suite yourself as well, pass expected_suite_digest on /verify or
+   /register — a badge for a weaker suite has a different digest and will be
+   refused.
 4. If you want a second attestation on top of the runtime's own self-signed
    claim, POST the badge to /countersign and keep the returned stamped badge.
    The Notary's stamp asserts only that the badge passed the Notary's gates at
@@ -138,8 +158,9 @@ POST /countersign-parc
    re-run of your suite. Treat it as "an independent party checked this", not as
    fresh test evidence.
 5. To carry your REPUTATION (not just conformance) into a new trust domain:
-   your receipts must touch the certified world — at least one counterparty
-   in your ledger has to be on the Notary register (the anchor rule). Then:
+   your receipts must touch an anchor — at least one counterparty in your
+   ledger has to be a NOTARY_ANCHORS did or registered with a lab-countersigned
+   badge (the anchor rule). Then:
    have your home chapter mint a PARC credential over your receipts ledger,
    POST {credential, ledger} to /countersign-parc, and present the stamped
    envelope at the destination. The destination verifies the Notary stamp

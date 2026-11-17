@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .bureau_seed.txt
 *:Zone.Identifier
+.pytest_cache/
