@@ -31,12 +31,24 @@ If those answer, the Base URL in skill.md is already set to `<your-url>`; submit
 at https://nandatown.projectnanda.org/skills
 
 ## Note on persistence
-The register persists to `REGISTER_PATH` with atomic writes and boots from the
-committed `data/register-seed.json` (entries grandfathered from before
-persistence existed). In production, mount a volume and point at it:
+The register is an append-only, hash-chained JSON Lines log at `REGISTER_PATH`;
+a new log starts with the committed `data/register-seed.json` entries
+(grandfathered from before persistence existed). In production, mount a volume
+and point at it:
 
     railway volume add --mount-path /data
     railway variables --set "REGISTER_PATH=/data/register.json"
 
 Without `REGISTER_PATH` the service still boots with the seeded entries, but
 registrations made after deploy will not survive the NEXT restart.
+
+The chain is verified on every start and the service does not start if it is
+broken (see README, "The register log"). A file still in the earlier
+single-object JSON format is converted once at start; the original is kept
+next to it as `register.json.pre-chain.json`.
+
+## Note on admission settings
+`NOTARY_SUITE_PINS` must be set for any badge to certify, `NOTARY_LAB_DIDS`
+decides whose counter-signature makes a key an anchor, and `NOTARY_ANCHORS`
+holds the root anchors; with no anchors, PARC stamps are refused. See README,
+"Configuration".
